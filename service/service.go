@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
@@ -29,7 +28,7 @@ type service struct {
 	metrics   Metrics
 	strategy  Strategy
 
-	announced *atomic.Bool
+	debouncer *debouncer
 }
 
 func New(
@@ -39,6 +38,8 @@ func New(
 	interval time.Duration,
 	metrics Metrics,
 	strategy Strategy,
+	failureThreshold uint32,
+	recoveryThreshold uint32,
 ) Service {
 	return &service{
 		name:      name,
@@ -47,7 +48,7 @@ func New(
 		interval:  interval,
 		metrics:   metrics,
 		strategy:  strategy,
-		announced: &atomic.Bool{},
+		debouncer: newDebouncer(failureThreshold, recoveryThreshold),
 	}
 }
 
@@ -55,6 +56,9 @@ func (s *service) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			// Do not perform any tail announce/denounce on shutdown:
+			// a pending candidate must not trigger RIB changes after
+			// the service has been canceled.
 			return nil
 		case <-time.After(s.interval):
 			if err := s.run(ctx); err != nil {
@@ -80,28 +84,26 @@ func (s *service) run(ctx context.Context) error {
 		return err
 	}
 
-	if serviceDown {
-		s.metrics.ServiceDown(s.name)
-	} else {
-		s.metrics.ServiceUp(s.name)
+	// The raw result updates the candidate counters. The stable state
+	// (and the announced flag mirroring the RIB) is committed only once
+	// the requested action actually succeeds; otherwise the candidate is
+	// retained and the correct action is retried on the next cycle.
+	switch s.debouncer.observe(serviceDown) {
+	case actionDenounce:
+		if err := s.announcer.Denounce(ctx); err != nil {
+			log.Warnf("denounce failed: %s", err)
+		} else {
+			s.debouncer.commit(serviceDown)
+		}
+	case actionAnnounce:
+		if err := s.announcer.Announce(ctx); err != nil {
+			log.Warnf("announce failed: %s", err)
+		} else {
+			s.debouncer.commit(serviceDown)
+		}
 	}
 
-	if serviceDown {
-		if s.announced.Load() {
-			if err := s.announcer.Denounce(ctx); err != nil {
-				log.Warnf("denounce failed: %s", err)
-			}
-			s.announced.Store(false)
-		}
-	} else {
-		if !s.announced.Load() {
-			if err := s.announcer.Announce(ctx); err != nil {
-				log.Warnf("announce failed: %s", err)
-			}
-		}
-
-		s.announced.Store(true)
-	}
+	s.metrics.ObserveState(s.name, s.debouncer.snapshot(!serviceDown))
 
 	return nil
 }

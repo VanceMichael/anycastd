@@ -1,0 +1,24 @@
+---
+announcer:
+  router_id: 10.3.3.3
+  local_address: 10.0.0.1
+  local_asn: 65999
+  routes:
+    - 10.0.0.128/32
+  peers:
+    - name: some_router_1
+      remote_address: 10.0.0.252
+      remote_asn: 65000
+services:
+  - name: http
+    check_interval: 10s
+    failure_threshold: 2
+    recovery_threshold: 3
+    checks:
+      - kind: http_2xx
+        spec:
+          address: 127.0.0.1:8080
+          path: /
+metrics:
+  enabled: true
+  address: 127.0.0.1:9090

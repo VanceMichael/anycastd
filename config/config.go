@@ -74,17 +74,23 @@ func (p Peer) Validate() error {
 }
 
 type Service struct {
-	Name            string          `json:"name"`
-	CheckInterval   th.Duration     `json:"check_interval"`
-	Strategy        string          `json:"strategy"`
-	StrategyOptions json.RawMessage `json:"strategy_options"`
-	Checks          []Check         `json:"checks"`
+	Name              string          `json:"name"`
+	CheckInterval     th.Duration     `json:"check_interval"`
+	Strategy          string          `json:"strategy"`
+	StrategyOptions   json.RawMessage `json:"strategy_options"`
+	FailureThreshold  *uint32         `json:"failure_threshold"`
+	RecoveryThreshold *uint32         `json:"recovery_threshold"`
+	Checks            []Check         `json:"checks"`
 }
 
 func (s Service) Validate() error {
 	return validation.ValidateStruct(&s,
 		validation.Field(&s.Name, validation.Required),
 		validation.Field(&s.CheckInterval, validation.Required),
+		// A nil pointer means the threshold is omitted and gets the
+		// default of 1; an explicitly configured zero is illegal.
+		validation.Field(&s.FailureThreshold, validation.Min(uint32(1))),
+		validation.Field(&s.RecoveryThreshold, validation.Min(uint32(1))),
 		validation.Field(&s.Checks, validation.Required),
 	)
 }
@@ -154,5 +160,26 @@ func NewFromFile(filename string) (*Config, error) {
 		return nil, errors.Wrap(err, "error unmarshaling config")
 	}
 
-	return cfg, cfg.Validate()
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
+	cfg.applyDefaults()
+
+	return cfg, nil
+}
+
+// applyDefaults fills omitted optional settings with their default values.
+// It must be called only after a successful Validate.
+func (c *Config) applyDefaults() {
+	for i := range c.Services {
+		if c.Services[i].FailureThreshold == nil {
+			one := uint32(1)
+			c.Services[i].FailureThreshold = &one
+		}
+		if c.Services[i].RecoveryThreshold == nil {
+			one := uint32(1)
+			c.Services[i].RecoveryThreshold = &one
+		}
+	}
 }

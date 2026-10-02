@@ -108,6 +108,43 @@ func TestConfig(t *testing.T) {
 	}
 }
 
+func TestThresholds(t *testing.T) {
+	r := require.New(t)
+
+	cfg, err := NewFromFile("testdata/thresholds.yaml")
+	r.NoError(err)
+	r.Len(cfg.Services, 1)
+	r.NotNil(cfg.Services[0].FailureThreshold)
+	r.NotNil(cfg.Services[0].RecoveryThreshold)
+	r.Equal(uint32(2), *cfg.Services[0].FailureThreshold)
+	r.Equal(uint32(3), *cfg.Services[0].RecoveryThreshold)
+}
+
+func TestThresholdDefaults(t *testing.T) {
+	r := require.New(t)
+
+	for _, path := range []string{"testdata/sample.yaml", "testdata/sample.json"} {
+		cfg, err := NewFromFile(path)
+		r.NoError(err)
+		r.Len(cfg.Services, 1)
+		r.NotNil(cfg.Services[0].FailureThreshold, path)
+		r.NotNil(cfg.Services[0].RecoveryThreshold, path)
+		r.Equal(uint32(1), *cfg.Services[0].FailureThreshold, path)
+		r.Equal(uint32(1), *cfg.Services[0].RecoveryThreshold, path)
+	}
+}
+
+func TestInvalidThreshold(t *testing.T) {
+	r := require.New(t)
+
+	_, err := NewFromFile("testdata/invalid_threshold.yaml")
+	r.Error(err)
+	r.Equal(
+		"services: (0: (failure_threshold: must be no less than 1; recovery_threshold: must be no less than 1.).).",
+		err.Error(),
+	)
+}
+
 func TestEmptyConfig(t *testing.T) {
 	r := require.New(t)
 

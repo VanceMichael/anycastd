@@ -35,6 +35,7 @@ func init() {
 }
 
 type tls_certificate struct {
+	name string
 	path string
 
 	retrieveCertificates func() ([]*x509.Certificate, error)
@@ -46,6 +47,12 @@ type tls_certificate struct {
 }
 
 func New(s spec) (checkers.Checker, error) {
+	return NewNamed(checkName, s)
+}
+
+// NewNamed builds a TLS certificate checker with an explicit instance
+// identity used in logs and the checker-owned Prometheus label sets.
+func NewNamed(name string, s spec) (checkers.Checker, error) {
 	var fn func() ([]*x509.Certificate, error)
 	if s.Local != nil {
 		fn = getLocalCertificate(*s.Local)
@@ -55,15 +62,17 @@ func New(s spec) (checkers.Checker, error) {
 		return nil, errors.New("either local or remote configuration must be defined")
 	}
 
-	return newWithCertificateRetriever(s, fn)
+	return newWithCertificateRetriever(name, s, fn)
 }
 
-func newWithCertificateRetriever(s spec, fn func() ([]*x509.Certificate, error)) (checkers.Checker, error) {
+func newWithCertificateRetriever(name string, s spec, fn func() ([]*x509.Certificate, error)) (checkers.Checker, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
 
 	tc := &tls_certificate{
+		name: name,
+
 		retrieveCertificates: fn,
 
 		commonName:  s.CommonName,
@@ -79,13 +88,13 @@ func newWithCertificateRetriever(s spec, fn func() ([]*x509.Certificate, error))
 	return tc, nil
 }
 
-func NewFromSpec(in json.RawMessage) (checkers.Checker, error) {
+func NewFromSpec(name string, in json.RawMessage) (checkers.Checker, error) {
 	s := spec{}
 	if err := json.Unmarshal(in, &s); err != nil {
 		return nil, err
 	}
 
-	return New(s)
+	return NewNamed(name, s)
 }
 
 func (s *tls_certificate) Kind() string {
@@ -94,7 +103,7 @@ func (s *tls_certificate) Kind() string {
 
 func (s *tls_certificate) Check(ctx context.Context) error {
 	log.WithFields(log.Fields{
-		"check": checkName,
+		"check": s.name,
 	}).Tracef("running check")
 
 	certs, err := s.retrieveCertificates()
@@ -114,7 +123,7 @@ func (s *tls_certificate) Check(ctx context.Context) error {
 	ttl := int(time.Since(crt.NotAfter).Seconds())
 
 	log.WithFields(log.Fields{
-		"check":        checkName,
+		"check":        s.name,
 		"path":         s.path,
 		"ttl":          ttl,
 		"common_name":  crt.Subject.CommonName,
@@ -123,7 +132,7 @@ func (s *tls_certificate) Check(ctx context.Context) error {
 		"ip_addresses": crt.IPAddresses,
 	}).Tracef("certificate parsed")
 
-	certificateExpiresInSeconds.WithLabelValues(checkName, s.path).Set(float64(ttl))
+	certificateExpiresInSeconds.WithLabelValues(s.name, s.path).Set(float64(ttl))
 
 	if ttl > 0 {
 		return errors.Errorf("Certificate is expired %d seconds ago", ttl)

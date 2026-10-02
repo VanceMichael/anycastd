@@ -142,17 +142,28 @@ func main() {
 
 		checks := []service.Checker{}
 		for _, check := range svcCfg.Checks {
+			// Identity is resolved and validated while parsing the config:
+			// explicit name when present, kind itself otherwise. It stays
+			// stable across restarts and is threaded into the checker
+			// instance, logs and every metric label set.
+			identity := check.Identity()
+
 			log.WithFields(log.Fields{
 				"service": svcCfg.Name,
-				"check":   check.Kind,
+				"check":   identity,
+				"kind":    check.Kind,
 			}).Trace("registering check ...")
 
-			c, err := checkers.NewCheckerByKind(check.Kind, check.Spec)
+			c, err := checkers.NewCheckerByKind(check.Kind, identity, check.Spec)
 			if err != nil {
 				panic(err)
 			}
 
-			checks = append(checks, service.Checker{Check: c, Group: check.Group})
+			checks = append(checks, service.Checker{
+				Name:  identity,
+				Check: c,
+				Group: check.Group,
+			})
 		}
 
 		a := announcer.New(announcer.Config{

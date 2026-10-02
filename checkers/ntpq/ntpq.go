@@ -47,6 +47,7 @@ var (
 )
 
 type ntpq struct {
+	name            string
 	server          string
 	srcAddr         string
 	tries           uint8
@@ -68,11 +69,18 @@ func init() {
 }
 
 func New(s spec) (checkers.Checker, error) {
+	return NewNamed(checkName, s)
+}
+
+// NewNamed builds an NTP checker with an explicit instance identity used in
+// logs and the checker-owned Prometheus label sets.
+func NewNamed(name string, s spec) (checkers.Checker, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
 
 	return &ntpq{
+		name:            name,
 		server:          s.Server,
 		srcAddr:         s.SrcAddr,
 		tries:           s.Tries,
@@ -83,13 +91,13 @@ func New(s spec) (checkers.Checker, error) {
 	}, nil
 }
 
-func NewFromSpec(in json.RawMessage) (checkers.Checker, error) {
+func NewFromSpec(name string, in json.RawMessage) (checkers.Checker, error) {
 	s := spec{}
 	if err := json.Unmarshal(in, &s); err != nil {
 		return nil, err
 	}
 
-	return New(s)
+	return NewNamed(name, s)
 }
 
 func (h *ntpq) Kind() string {
@@ -100,14 +108,14 @@ func (d *ntpq) Check(ctx context.Context) error {
 	var lastErr error
 	for i := 0; i < int(d.tries); i++ {
 		log.WithFields(log.Fields{
-			"check":   checkName,
+			"check":   d.name,
 			"attempt": i + 1,
 		}).Tracef("running check")
 
 		if err := d.check(ctx); err != nil {
 			lastErr = err
 			log.WithFields(log.Fields{
-				"check":   checkName,
+				"check":   d.name,
 				"attempt": i + 1,
 			}).Infof("error received: %s", err)
 		} else {
@@ -135,12 +143,12 @@ func (d *ntpq) check(_ context.Context) error {
 	}
 
 	log.WithFields(log.Fields{
-		"check": checkName,
+		"check": d.name,
 	}).Tracef("Offset: %d, RTT: %d, RefID: %d", response.ClockOffset.Milliseconds(), response.RTT.Milliseconds(), response.ReferenceID)
 	// since beevik/ntp doesn't do retries by itself we increment just by 1
-	ntpPacketsSent.WithLabelValues(checkName, d.server).Add(float64(1))
-	ntpOffset.WithLabelValues(checkName, d.server).Set(float64(response.ClockOffset.Milliseconds()))
-	ntpRtt.WithLabelValues(checkName, d.server).Set(float64(response.RTT.Milliseconds()))
+	ntpPacketsSent.WithLabelValues(d.name, d.server).Add(float64(1))
+	ntpOffset.WithLabelValues(d.name, d.server).Set(float64(response.ClockOffset.Milliseconds()))
+	ntpRtt.WithLabelValues(d.name, d.server).Set(float64(response.RTT.Milliseconds()))
 
 	if response.ClockOffset.Abs() > d.offsetThreshold {
 		return ErrOffset

@@ -20,47 +20,47 @@ type metrics struct {
 	checkDurationSeconds *prometheus.GaugeVec
 }
 
+func newMetrics() *metrics {
+	return &metrics{
+		appUpGauge: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "anycastd",
+				Name:      "up",
+				Help:      "Application liveness status (must always be 1)",
+			},
+			[]string{"version"},
+		),
+		upGauge: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "anycastd",
+				Name:      "service_up",
+				Help:      "Service liveness status based on checks",
+			},
+			[]string{"service"},
+		),
+		checkDurationSeconds: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "anycastd",
+				Name:      "check_duration_seconds",
+				Help:      "Duration of check execution in seconds",
+			},
+			[]string{"service", "check"},
+		),
+	}
+}
+
 func NewMetrics(appVersion string) (Metrics, error) {
-	appUpGauge := prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: "anycastd",
-			Name:      "up",
-			Help:      "Application liveness status (must always be 1)",
-		},
-		[]string{"version"},
-	)
+	m := newMetrics()
 
-	upGauge := prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: "anycastd",
-			Name:      "service_up",
-			Help:      "Service liveness status based on checks",
-		},
-		[]string{"service"},
-	)
-
-	checkDurationSeconds := prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: "anycastd",
-			Name:      "check_duration_seconds",
-			Help:      "Duration of check execution in seconds",
-		},
-		[]string{"service", "check"},
-	)
-
-	for _, m := range []prometheus.Collector{appUpGauge, upGauge, checkDurationSeconds} {
-		if err := prometheus.Register(m); err != nil {
+	for _, c := range []prometheus.Collector{m.appUpGauge, m.upGauge, m.checkDurationSeconds} {
+		if err := prometheus.Register(c); err != nil {
 			return nil, err
 		}
 	}
 
-	appUpGauge.WithLabelValues(appVersion).Set(1)
+	m.appUpGauge.WithLabelValues(appVersion).Set(1)
 
-	return &metrics{
-		appUpGauge:           appUpGauge,
-		upGauge:              upGauge,
-		checkDurationSeconds: checkDurationSeconds,
-	}, nil
+	return m, nil
 }
 
 func (m *metrics) ServiceUp(service string) {

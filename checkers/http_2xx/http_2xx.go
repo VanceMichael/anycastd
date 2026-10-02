@@ -23,6 +23,7 @@ func init() {
 }
 
 type http_2xx struct {
+	name     string
 	client   *http.Client
 	url      string
 	method   string
@@ -33,6 +34,12 @@ type http_2xx struct {
 }
 
 func New(s spec) (checkers.Checker, error) {
+	return NewNamed(checkName, s)
+}
+
+// NewNamed builds an HTTP checker with an explicit instance identity used in
+// its log fields.
+func NewNamed(name string, s spec) (checkers.Checker, error) {
 	client := &http.Client{
 		Timeout: s.Timeout.TimeDuration(),
 	}
@@ -47,6 +54,7 @@ func New(s spec) (checkers.Checker, error) {
 	}
 
 	return &http_2xx{
+		name:     name,
 		client:   client,
 		url:      s.URL,
 		method:   s.Method,
@@ -57,13 +65,13 @@ func New(s spec) (checkers.Checker, error) {
 	}, nil
 }
 
-func NewFromSpec(in json.RawMessage) (checkers.Checker, error) {
+func NewFromSpec(name string, in json.RawMessage) (checkers.Checker, error) {
 	s := spec{}
 	if err := json.Unmarshal(in, &s); err != nil {
 		return nil, err
 	}
 
-	return New(s)
+	return NewNamed(name, s)
 }
 
 func (h *http_2xx) Kind() string {
@@ -74,14 +82,14 @@ func (h *http_2xx) Check(ctx context.Context) error {
 	var lastErr error
 	for i := 0; i < int(h.tries); i++ {
 		log.WithFields(log.Fields{
-			"check":   checkName,
+			"check":   h.name,
 			"attempt": i + 1,
 		}).Tracef("running check")
 
 		if err := h.check(ctx); err != nil {
 			lastErr = err
 			log.WithFields(log.Fields{
-				"check":   checkName,
+				"check":   h.name,
 				"attempt": i + 1,
 			}).Infof("error received: %s", err)
 		} else {

@@ -25,7 +25,7 @@ func TestSpec(t *testing.T) {
 	data, err := os.ReadFile("testdata/spec.json")
 	r.NoError(err)
 
-	c, err := NewFromSpec(json.RawMessage(data))
+	c, err := NewFromSpec(checkName, json.RawMessage(data))
 	r.NoError(err)
 
 	p := c.(*tftp_rrq)

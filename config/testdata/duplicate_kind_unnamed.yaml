@@ -1,0 +1,26 @@
+---
+announcer:
+  router_id: 10.3.3.3
+  local_address: 10.0.0.1
+  local_asn: 65999
+  routes:
+    - 10.0.0.128/32
+  peers:
+    - name: some_router_1
+      remote_address: 10.0.0.252
+      remote_asn: 65000
+services:
+  - name: edge
+    check_interval: 10s
+    checks:
+      - kind: icmp_ping
+        spec:
+          static:
+            host: 192.0.2.1
+      - kind: icmp_ping
+        spec:
+          static:
+            host: 192.0.2.2
+metrics:
+  enabled: true
+  address: 127.0.0.1:9090

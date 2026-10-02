@@ -13,12 +13,19 @@ type Checker interface {
 	Check(ctx context.Context) error
 }
 
+// Constructor builds a Checker instance. name is the stable per-service
+// identity of the check instance (explicit check name, or the kind itself
+// for legacy single-instance configurations); checkers which own metrics
+// or emit logs must use it instead of the kind constant so multiple
+// instances of the same kind can never overwrite each other.
+type Constructor func(name string, in json.RawMessage) (Checker, error)
+
 var (
-	registry      = map[string]func(in json.RawMessage) (Checker, error){}
+	registry      = map[string]Constructor{}
 	registryMutex = &sync.RWMutex{}
 )
 
-func NewCheckerByKind(kind string, spec json.RawMessage) (Checker, error) {
+func NewCheckerByKind(kind, name string, spec json.RawMessage) (Checker, error) {
 	registryMutex.RLock()
 	defer registryMutex.RUnlock()
 
@@ -27,10 +34,10 @@ func NewCheckerByKind(kind string, spec json.RawMessage) (Checker, error) {
 		return nil, errors.Errorf("checker with kind `%s` is not registered", kind)
 	}
 
-	return c(spec)
+	return c(name, spec)
 }
 
-func Register(kind string, fn func(in json.RawMessage) (Checker, error)) error {
+func Register(kind string, fn Constructor) error {
 	registryMutex.Lock()
 	defer registryMutex.Unlock()
 
@@ -43,7 +50,7 @@ func Register(kind string, fn func(in json.RawMessage) (Checker, error)) error {
 	return nil
 }
 
-func MustRegister(kind string, fn func(in json.RawMessage) (Checker, error)) {
+func MustRegister(kind string, fn Constructor) {
 	if err := Register(kind, fn); err != nil {
 		panic(err)
 	}

@@ -25,6 +25,7 @@ func init() {
 }
 
 type tftp_rrq struct {
+	name      string
 	url       string
 	expSHA256 *string
 	tries     uint8
@@ -33,11 +34,18 @@ type tftp_rrq struct {
 }
 
 func New(s spec) (checkers.Checker, error) {
+	return NewNamed(checkName, s)
+}
+
+// NewNamed builds a TFTP checker with an explicit instance identity used in
+// its log fields.
+func NewNamed(name string, s spec) (checkers.Checker, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
 
 	return &tftp_rrq{
+		name:      name,
 		url:       s.URL,
 		expSHA256: s.ExpectedSHA256,
 		tries:     s.Tries,
@@ -46,13 +54,13 @@ func New(s spec) (checkers.Checker, error) {
 	}, nil
 }
 
-func NewFromSpec(in json.RawMessage) (checkers.Checker, error) {
+func NewFromSpec(name string, in json.RawMessage) (checkers.Checker, error) {
 	s := spec{}
 	if err := json.Unmarshal(in, &s); err != nil {
 		return nil, err
 	}
 
-	return New(s)
+	return NewNamed(name, s)
 }
 
 func (t *tftp_rrq) Kind() string {
@@ -63,14 +71,14 @@ func (t *tftp_rrq) Check(ctx context.Context) error {
 	var lastErr error
 	for i := 0; i < int(t.tries); i++ {
 		log.WithFields(log.Fields{
-			"check":   checkName,
+			"check":   t.name,
 			"attempt": i + 1,
 		}).Tracef("running check")
 
 		if err := t.check(ctx); err != nil {
 			lastErr = err
 			log.WithFields(log.Fields{
-				"check":   checkName,
+				"check":   t.name,
 				"attempt": i + 1,
 			}).Infof("error received: %s", err)
 		} else {
@@ -118,7 +126,7 @@ func (t *tftp_rrq) check(context.Context) error {
 	}
 
 	log.WithFields(log.Fields{
-		"check": checkName,
+		"check": t.name,
 	}).Tracef("bytes received: %d", n)
 
 	if t.expSHA256 != nil {

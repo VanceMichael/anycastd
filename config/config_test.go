@@ -108,6 +108,115 @@ func TestConfig(t *testing.T) {
 	}
 }
 
+func TestCheckIdentity(t *testing.T) {
+	r := require.New(t)
+
+	r.Equal("icmp_ping", Check{Kind: "icmp_ping"}.Identity())
+	r.Equal("uplink-a", Check{Name: "uplink-a", Kind: "icmp_ping"}.Identity())
+}
+
+func TestServiceCheckNameValidation(t *testing.T) {
+	type testCase struct {
+		name           string
+		checks         []Check
+		expErrorParts []string
+	}
+
+	validCheck := func(kind string) Check {
+		return Check{Kind: kind, Spec: json.RawMessage(`{}`)}
+	}
+	namedCheck := func(kind, name string) Check {
+		c := validCheck(kind)
+		c.Name = name
+		return c
+	}
+
+	validService := func(checks []Check) Service {
+		return Service{
+			Name:          "svc",
+			CheckInterval: th.Duration(10 * time.Second),
+			Checks:        checks,
+		}
+	}
+
+	tcs := []testCase{
+		{
+			name:   "unique unnamed kinds keep kind as identity",
+			checks: []Check{validCheck("icmp_ping"), validCheck("ntpq")},
+		},
+		{
+			name:   "unique kind may carry an explicit name",
+			checks: []Check{namedCheck("icmp_ping", "uplink-a")},
+		},
+		{
+			name:   "repeated kind with unique explicit names",
+			checks: []Check{namedCheck("icmp_ping", "uplink-a"), namedCheck("icmp_ping", "uplink-b")},
+		},
+		{
+			name:   "repeated kind with one instance unnamed",
+			checks: []Check{namedCheck("icmp_ping", "uplink-a"), validCheck("icmp_ping")},
+			expErrorParts: []string{
+				`check #1 (kind "icmp_ping")`,
+				`name is required: kind "icmp_ping" appears 2 times in service "svc"`,
+			},
+		},
+		{
+			name:   "repeated kind with both instances unnamed",
+			checks: []Check{validCheck("icmp_ping"), validCheck("icmp_ping")},
+			expErrorParts: []string{
+				`check #0 (kind "icmp_ping")`,
+				`check #1 (kind "icmp_ping")`,
+				`name is required`,
+				`check #1 (identity "icmp_ping")`,
+				`check identity "icmp_ping" collides with check #0 in service "svc"`,
+			},
+		},
+		{
+			name:   "duplicate explicit names across different kinds",
+			checks: []Check{namedCheck("http_2xx", "shared"), namedCheck("dns_lookup", "shared")},
+			expErrorParts: []string{
+				`check #1 (name "shared")`,
+				`duplicate check name "shared": already used by check #0 in service "svc"`,
+			},
+		},
+		{
+			name:   "explicit name shadowing another check's kind identity",
+			checks: []Check{validCheck("icmp_ping"), namedCheck("http_2xx", "icmp_ping")},
+			expErrorParts: []string{
+				`check #1 (identity "icmp_ping")`,
+				`check identity "icmp_ping" collides with check #0 in service "svc"`,
+			},
+		},
+		{
+			name:           "illegal characters in name",
+			checks:         []Check{namedCheck("icmp_ping", "bad name!")},
+			expErrorParts: []string{"name:", "valid format"},
+		},
+		{
+			name:           "three repeated kinds with the middle instance unnamed",
+			checks:         []Check{namedCheck("ntpq", "a"), validCheck("ntpq"), namedCheck("ntpq", "b")},
+			expErrorParts: []string{`check #1 (kind "ntpq")`, `appears 3 times in service "svc"`},
+		},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			r := require.New(t)
+
+			err := validService(tc.checks).Validate()
+			if len(tc.expErrorParts) == 0 {
+				r.NoError(err)
+				return
+			}
+
+			r.Error(err)
+			for _, part := range tc.expErrorParts {
+				r.Contains(err.Error(), part)
+			}
+		})
+	}
+}
+
 func TestEmptyConfig(t *testing.T) {
 	r := require.New(t)
 

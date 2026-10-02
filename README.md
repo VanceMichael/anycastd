@@ -101,10 +101,22 @@ services:
         spec:
           interface: dummy0
           ipv4: 33.22.11.0
-      - kind: icmp_ping
+      - name: icmp-google
+        kind: icmp_ping
         spec:
           static:
             host: google.com
+          tries: 3
+          interval: 100ms
+          timeout: 5s
+      # A second instance of the same kind is allowed, but it must have a
+      # unique name within the service so its results, logs and metrics can
+      # never overwrite the other instance.
+      - name: icmp-cloudflare
+        kind: icmp_ping
+        spec:
+          static:
+            host: 1.1.1.1
           tries: 3
           interval: 100ms
           timeout: 5s
@@ -126,6 +138,15 @@ metrics:
   enabled: true
   address: 127.0.0.1:9090
 ```
+
+Each check entry may carry an optional `name` which is its stable identity
+inside the service, used in log fields and as the `check` Prometheus label.
+When a `kind` appears more than once in the same service every instance
+must be named, and names must be unique within the service; configuration
+parsing fails otherwise, before any checker, BGP peer or metrics listener
+is started. A check of a kind that appears only once may stay unnamed, in
+which case the `kind` itself is used as its identity, so existing
+single-check configurations and dashboards keep working without changes.
 
 ## Available checks
 

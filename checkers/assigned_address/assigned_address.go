@@ -14,6 +14,7 @@ import (
 var _ checkers.Checker = (*assigned_address)(nil)
 
 type assigned_address struct {
+	name  string
 	iface *string
 	ipv4  string
 
@@ -27,11 +28,18 @@ func init() {
 }
 
 func New(s spec) (checkers.Checker, error) {
+	return NewNamed(checkName, s)
+}
+
+// NewNamed builds an assigned-address checker with an explicit instance
+// identity used in its log fields.
+func NewNamed(name string, s spec) (checkers.Checker, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
 
 	return &assigned_address{
+		name:  name,
 		iface: s.Interface,
 		ipv4:  s.IPv4,
 
@@ -39,13 +47,13 @@ func New(s spec) (checkers.Checker, error) {
 	}, nil
 }
 
-func NewFromSpec(in json.RawMessage) (checkers.Checker, error) {
+func NewFromSpec(name string, in json.RawMessage) (checkers.Checker, error) {
 	s := spec{}
 	if err := json.Unmarshal(in, &s); err != nil {
 		return nil, err
 	}
 
-	return New(s)
+	return NewNamed(name, s)
 }
 
 func (h *assigned_address) Kind() string {
@@ -59,7 +67,7 @@ func (d *assigned_address) Check(ctx context.Context) error {
 	}
 
 	log.WithFields(log.Fields{
-		"check":      checkName,
+		"check":      d.name,
 		"interfaces": ifaces,
 	}).Tracef("discovered interfaces")
 

@@ -20,7 +20,6 @@ func init() {
 func (s *serviceTestSuite) TestRunPass() {
 	s.announcerM.On("Announce").Return(nil).Once()
 
-	s.checkM.On("Kind").Return("test_check").Once()
 	s.checkM.On("Check").Return(nil).Once()
 
 	s.metricsM.On("ServiceUp", "test_service").Return().Once()
@@ -28,7 +27,10 @@ func (s *serviceTestSuite) TestRunPass() {
 
 	strategy, _ := GetStrategyNoOptions("")
 
-	svc := New("test_service", s.announcerM, []Checker{{s.checkM, ""}}, 1*time.Second, s.metricsM, strategy).(*service)
+	svc := New("test_service", s.announcerM, []Checker{{
+		Name:  "test_check",
+		Check: s.checkM,
+	}}, 1*time.Second, s.metricsM, strategy).(*service)
 
 	err := svc.run(s.ctx)
 	s.Require().NoError(err)
@@ -42,7 +44,10 @@ func (s *serviceTestSuite) TestRunFail() {
 	s.metricsM.On("MeasureCall", "test_service", "test_check").Return().Once()
 
 	strategy, _ := GetStrategyNoOptions("")
-	svc := New("test_service", s.announcerM, []Checker{{s.checkM, ""}}, 1*time.Second, s.metricsM, strategy).(*service)
+	svc := New("test_service", s.announcerM, []Checker{{
+		Name:  "test_check",
+		Check: s.checkM,
+	}}, 1*time.Second, s.metricsM, strategy).(*service)
 
 	err := svc.run(s.ctx)
 	s.Require().NoError(err)
@@ -53,7 +58,7 @@ func (s *serviceTestSuite) TestRunPassThenFailThenPass() {
 	aCall2 := s.announcerM.On("Denounce").Return(nil).NotBefore(aCall1).Once()
 	s.announcerM.On("Announce").Return(nil).NotBefore(aCall2).Once()
 
-	s.checkM.On("Kind").Return("test_check").Times(3)
+	s.checkM.On("Kind").Return("test_check").Times(1)
 	cCall1 := s.checkM.On("Check").Return(nil).Once()
 	cCall2 := s.checkM.On("Check").Return(errors.New("error")).NotBefore(cCall1).Once()
 	s.checkM.On("Check").Return(nil).NotBefore(cCall2).Once()
@@ -66,12 +71,49 @@ func (s *serviceTestSuite) TestRunPassThenFailThenPass() {
 	s.metricsM.On("ServiceUp", "test_service").Return().NotBefore(mCall5).Once()
 
 	strategy, _ := GetStrategyNoOptions("")
-	svc := New("test_service", s.announcerM, []Checker{{s.checkM, ""}}, 1*time.Second, s.metricsM, strategy).(*service)
+	svc := New("test_service", s.announcerM, []Checker{{
+		Name:  "test_check",
+		Check: s.checkM,
+	}}, 1*time.Second, s.metricsM, strategy).(*service)
 
 	for i := 0; i < 3; i++ {
 		err := svc.run(s.ctx)
 		s.Require().NoError(err)
 	}
+}
+
+// TestRunSiblingInstancesIndependent wires two checks of the same kind
+// with distinct names (mimicking e.g. two icmp_ping instances with
+// different parameters). When only one instance fails, its failure,
+// MeasureCall label and result must not affect the sibling; with the "all"
+// strategy the service stays up and the healthy instance's result is
+// evaluated independently.
+func (s *serviceTestSuite) TestRunSiblingInstancesIndependent() {
+	checkAM := checkers.NewMock()
+	checkBM := checkers.NewMock()
+
+	s.announcerM.On("Announce").Return(nil).Once()
+
+	checkAM.On("Kind").Return("icmp_ping").Once()
+	checkAM.On("Check").Return(errors.New("first instance failed")).Once()
+	checkBM.On("Check").Return(nil).Once()
+
+	s.metricsM.On("MeasureCall", "test_service", "ping-a").Return().Once()
+	s.metricsM.On("MeasureCall", "test_service", "ping-b").Return().Once()
+	s.metricsM.On("ServiceUp", "test_service").Return().Once()
+
+	strategy, err := GetStrategyNoOptions("all")
+	s.Require().NoError(err)
+
+	svc := New("test_service", s.announcerM, []Checker{
+		{Name: "ping-a", Check: checkAM, Group: "g1"},
+		{Name: "ping-b", Check: checkBM, Group: "g1"},
+	}, 1*time.Second, s.metricsM, strategy).(*service)
+
+	s.Require().NoError(svc.run(s.ctx))
+
+	checkAM.AssertExpectations(s.T())
+	checkBM.AssertExpectations(s.T())
 }
 
 // Definitions ...

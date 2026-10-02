@@ -8,6 +8,52 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestNamedInstancesInStrategy(t *testing.T) {
+	namedResult := func(name, group string, success bool) CheckResult {
+		return CheckResult{
+			checker: Checker{Name: name, Group: group},
+			result:  success,
+		}
+	}
+
+	// The identity of every same-kind instance must be visible to the
+	// strategy input.
+	var seen []string
+	strategy := Strategy(func(results []CheckResult) (bool, error) {
+		for _, r := range results {
+			seen = append(seen, r.checker.Name)
+		}
+		return false, nil
+	})
+
+	_, err := strategy([]CheckResult{
+		namedResult("ping-a", "g1", true),
+		namedResult("ping-b", "g1", false),
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"ping-a", "ping-b"}, seen)
+
+	// Group combination semantics key off Group only: same kind, same
+	// group, one healthy instance means the group is not down.
+	groupStrategy, err := GetStrategyNoOptions("all_in_group")
+	assert.NoError(t, err)
+
+	down, err := groupStrategy([]CheckResult{
+		namedResult("ping-a", "g1", false),
+		namedResult("ping-b", "g1", true),
+	})
+	assert.NoError(t, err)
+	assert.False(t, down, "group is still served by the healthy sibling")
+
+	// Both instances of the same kind/group failing brings the group down.
+	down, err = groupStrategy([]CheckResult{
+		namedResult("ping-a", "g1", false),
+		namedResult("ping-b", "g1", false),
+	})
+	assert.NoError(t, err)
+	assert.True(t, down)
+}
+
 func TestGetStrategy(t *testing.T) {
 	_, err := GetStrategyNoOptions("all")
 	assert.NoError(t, err, "all strategy exists")
@@ -55,7 +101,11 @@ func TestStrategies(t *testing.T) {
 		t.Run(testCase.strategy, func(t *testing.T) {
 			checkResults := []CheckResult{}
 			for i, result := range testCase.results {
-				checkResults = append(checkResults, CheckResult{Checker{checkM, testCase.groups[i]}, result})
+				checkResults = append(checkResults, CheckResult{Checker{
+					Name:  "test_check",
+					Check: checkM,
+					Group: testCase.groups[i],
+				}, result})
 			}
 
 			serviceDown, err := strategy(checkResults)
@@ -82,7 +132,10 @@ func TestStrategies(t *testing.T) {
 		t.Run(testCase.strategy, func(t *testing.T) {
 			checkResults := []CheckResult{}
 			for _, result := range testCase.results {
-				checkResults = append(checkResults, CheckResult{Checker{checkM, ""}, result})
+				checkResults = append(checkResults, CheckResult{Checker{
+					Name:  "test_check",
+					Check: checkM,
+				}, result})
 			}
 
 			serviceDown, err := strategy(checkResults)

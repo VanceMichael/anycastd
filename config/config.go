@@ -2,8 +2,10 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/asaskevich/govalidator"
@@ -15,6 +17,13 @@ import (
 )
 
 var isCIDR = validation.NewStringRuleWithError(govalidator.IsCIDR, validation.NewError("validation_is_cidr", "must be a valid CIDR"))
+
+// checkNamePattern restricts explicit check names so they stay safe as
+// Prometheus label values and log tokens. The name is never used as a part
+// of a metric name, only as its value.
+var checkNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+const checkNameMaxLength = 128
 
 var (
 	_ validation.Validatable = (*Config)(nil)
@@ -44,15 +53,34 @@ func (a Announcer) Validate() error {
 }
 
 type Check struct {
+	// Name is the explicit, stable identity of a check instance within a
+	// service. It is required whenever the same Kind appears more than once
+	// in a service and must be unique within the service. An empty Name is
+	// allowed only for checks whose Kind is unique; such checks keep the
+	// Kind itself as their runtime identity and metric label value.
+	Name  string          `json:"name"`
 	Kind  string          `json:"kind"`
 	Spec  json.RawMessage `json:"spec"`
 	Group string          `json:"group"`
+}
+
+// Identity returns the stable runtime identifier of the check instance:
+// the explicit Name when set, otherwise the Kind (legacy behavior).
+func (c Check) Identity() string {
+	if c.Name != "" {
+		return c.Name
+	}
+	return c.Kind
 }
 
 func (c Check) Validate() error {
 	return validation.ValidateStruct(&c,
 		validation.Field(&c.Kind, validation.Required),
 		validation.Field(&c.Spec, validation.Required),
+		validation.Field(&c.Name, validation.When(c.Name != "",
+			validation.Length(1, checkNameMaxLength),
+			validation.Match(checkNamePattern),
+		)),
 	)
 }
 
@@ -85,8 +113,72 @@ func (s Service) Validate() error {
 	return validation.ValidateStruct(&s,
 		validation.Field(&s.Name, validation.Required),
 		validation.Field(&s.CheckInterval, validation.Required),
-		validation.Field(&s.Checks, validation.Required),
+		validation.Field(&s.Checks, validation.Required, validation.By(func(value interface{}) error {
+			return validateChecks(s.Name, value)
+		})),
 	)
+}
+
+// validateChecks enforces the per-service check identity rules:
+//   - every instance of a Kind that appears more than once must carry an
+//     explicit Name;
+//   - explicit Names must be unique within the service;
+//   - the resolved identities (Name, or Kind when Name is empty) must not
+//     collide, so an explicit Name can never shadow another check's
+//     Kind-derived identity.
+//
+// Errors are keyed by the check index so they locate the offending
+// service/check pair during configuration parsing, before any runtime
+// component is started.
+func validateChecks(serviceName string, value interface{}) error {
+	checks, ok := value.([]Check)
+	if !ok {
+		return nil
+	}
+
+	kindCount := map[string]int{}
+	for _, c := range checks {
+		kindCount[c.Kind]++
+	}
+
+	errs := validation.Errors{}
+	names := map[string]int{}
+	identities := map[string]int{}
+
+	for i, c := range checks {
+		if kindCount[c.Kind] > 1 && c.Name == "" {
+			errs[fmt.Sprintf("check #%d (kind %q)", i, c.Kind)] = errors.Errorf(
+				"name is required: kind %q appears %d times in service %q, each instance must have a unique name",
+				c.Kind, kindCount[c.Kind], serviceName,
+			)
+		}
+
+		if c.Name != "" {
+			if first, ok := names[c.Name]; ok {
+				errs[fmt.Sprintf("check #%d (name %q)", i, c.Name)] = errors.Errorf(
+					"duplicate check name %q: already used by check #%d in service %q",
+					c.Name, first, serviceName,
+				)
+			} else {
+				names[c.Name] = i
+			}
+		}
+
+		identity := c.Identity()
+		if first, ok := identities[identity]; ok {
+			errs[fmt.Sprintf("check #%d (identity %q)", i, identity)] = errors.Errorf(
+				"check identity %q collides with check #%d in service %q; rename the check or use a unique kind",
+				identity, first, serviceName,
+			)
+		} else {
+			identities[identity] = i
+		}
+	}
+
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
 }
 
 type Metrics struct {

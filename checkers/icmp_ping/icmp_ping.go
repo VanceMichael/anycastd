@@ -107,6 +107,7 @@ func init() {
 }
 
 type icmp_ping struct {
+	name     string
 	host     string
 	tries    uint8
 	interval time.Duration
@@ -116,18 +117,26 @@ type icmp_ping struct {
 }
 
 func New(s spec) (checkers.Checker, error) {
+	return NewNamed(checkName, s)
+}
+
+// NewNamed builds an ICMP checker with an explicit instance identity used in
+// logs and the checker-owned Prometheus label sets.
+func NewNamed(name string, s spec) (checkers.Checker, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
 
-	return newWithPinger(s, runPing)
+	return newWithPinger(name, s, runPing)
 }
 
 func newWithPinger(
+	name string,
 	s spec,
 	pingerFn func(host string, tries uint8, interval, timeout time.Duration) (*pingStats, error),
 ) (checkers.Checker, error) {
 	return &icmp_ping{
+		name:     name,
 		host:     s.Static.Host,
 		tries:    s.Tries,
 		interval: s.Interval.TimeDuration(),
@@ -137,13 +146,13 @@ func newWithPinger(
 	}, nil
 }
 
-func NewFromSpec(in json.RawMessage) (checkers.Checker, error) {
+func NewFromSpec(name string, in json.RawMessage) (checkers.Checker, error) {
 	s := spec{}
 	if err := json.Unmarshal(in, &s); err != nil {
 		return nil, err
 	}
 
-	return New(s)
+	return NewNamed(name, s)
 }
 
 func (p *icmp_ping) Kind() string {
@@ -156,14 +165,14 @@ func (p *icmp_ping) Check(ctx context.Context) error {
 		return err
 	}
 
-	packetsSent.WithLabelValues(checkName, p.host).Add(float64(stats.PacketsSent))
-	packetsReceived.WithLabelValues(checkName, p.host).Add(float64(stats.PacketsRecv))
-	packetsReceivedDuplicates.WithLabelValues(checkName, p.host).Add(float64(stats.PacketsRecvDuplicates))
-	packetsLoss.WithLabelValues(checkName, p.host).Set(stats.PacketLoss)
-	maxRttSeconds.WithLabelValues(checkName, p.host).Set(stats.MaxRTT.Seconds())
-	minRttSeconds.WithLabelValues(checkName, p.host).Set(stats.MinRTT.Seconds())
-	avgRttSeconds.WithLabelValues(checkName, p.host).Set(stats.AvgRTT.Seconds())
-	stdDevRtt.WithLabelValues(checkName, p.host).Set(stats.StdDevRTT.Seconds())
+	packetsSent.WithLabelValues(p.name, p.host).Add(float64(stats.PacketsSent))
+	packetsReceived.WithLabelValues(p.name, p.host).Add(float64(stats.PacketsRecv))
+	packetsReceivedDuplicates.WithLabelValues(p.name, p.host).Add(float64(stats.PacketsRecvDuplicates))
+	packetsLoss.WithLabelValues(p.name, p.host).Set(stats.PacketLoss)
+	maxRttSeconds.WithLabelValues(p.name, p.host).Set(stats.MaxRTT.Seconds())
+	minRttSeconds.WithLabelValues(p.name, p.host).Set(stats.MinRTT.Seconds())
+	avgRttSeconds.WithLabelValues(p.name, p.host).Set(stats.AvgRTT.Seconds())
+	stdDevRtt.WithLabelValues(p.name, p.host).Set(stats.StdDevRTT.Seconds())
 
 	if stats.PacketsRecv != stats.PacketsSent {
 		return errors.Errorf("expected %d packets, got %d", stats.PacketsSent, stats.PacketsRecv)

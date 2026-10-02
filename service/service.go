@@ -16,7 +16,12 @@ type Service interface {
 	Run(ctx context.Context) error
 }
 
+// Checker binds a runtime checker to its stable per-service identity
+// (Name) and optional strategy group. Name is the explicit check name, or
+// the kind itself for legacy unnamed single-instance checks; it is used as
+// the check label of service-level metrics and in log fields.
 type Checker struct {
+	Name  string
 	Check checkers.Checker
 	Group string
 }
@@ -68,11 +73,15 @@ func (s *service) run(ctx context.Context) error {
 	checkResults := []CheckResult{}
 	for _, check := range s.checks {
 		result := true
-		if err := s.metrics.MeasureCall(ctx, s.name, check.Check.Kind(), check.Check.Check); err != nil {
-			log.Warnf("check failed: %s", err)
+		if err := s.metrics.MeasureCall(ctx, s.name, check.Name, check.Check.Check); err != nil {
+			log.WithFields(log.Fields{
+				"service": s.name,
+				"check":   check.Name,
+				"kind":    check.Check.Kind(),
+			}).Warnf("check failed: %s", err)
 			result = false
 		}
-		checkResults = append(checkResults, CheckResult{check, result})
+		checkResults = append(checkResults, CheckResult{checker: check, result: result})
 	}
 
 	serviceDown, err := s.strategy(checkResults)

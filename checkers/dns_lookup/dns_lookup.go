@@ -23,6 +23,7 @@ type resolver interface {
 }
 
 type dns_lookup struct {
+	name     string
 	query    string
 	resolver string
 	tries    uint8
@@ -39,11 +40,18 @@ func init() {
 }
 
 func New(s spec) (checkers.Checker, error) {
+	return NewNamed(checkName, s)
+}
+
+// NewNamed builds a DNS lookup checker with an explicit instance identity
+// used in its log fields.
+func NewNamed(name string, s spec) (checkers.Checker, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
 
 	return &dns_lookup{
+		name:     name,
 		query:    s.Query,
 		resolver: s.Resolver,
 		tries:    s.Tries,
@@ -54,13 +62,13 @@ func New(s spec) (checkers.Checker, error) {
 	}, nil
 }
 
-func NewFromSpec(in json.RawMessage) (checkers.Checker, error) {
+func NewFromSpec(name string, in json.RawMessage) (checkers.Checker, error) {
 	s := spec{}
 	if err := json.Unmarshal(in, &s); err != nil {
 		return nil, err
 	}
 
-	return New(s)
+	return NewNamed(name, s)
 }
 
 func (h *dns_lookup) Kind() string {
@@ -71,14 +79,14 @@ func (d *dns_lookup) Check(ctx context.Context) error {
 	var lastErr error
 	for i := 0; i < int(d.tries); i++ {
 		log.WithFields(log.Fields{
-			"check":   checkName,
+			"check":   d.name,
 			"attempt": i + 1,
 		}).Tracef("running check")
 
 		if err := d.check(ctx); err != nil {
 			lastErr = err
 			log.WithFields(log.Fields{
-				"check":   checkName,
+				"check":   d.name,
 				"attempt": i + 1,
 			}).Infof("error received: %s", err)
 		} else {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,15 +9,12 @@ import (
 	"github.com/kelseyhightower/envconfig"
 	apipb "github.com/osrg/gobgp/v3/api"
 	"github.com/osrg/gobgp/v3/pkg/server"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/runityru/anycastd/announcer"
 	"github.com/runityru/anycastd/announcer/gobgpv3"
-	"github.com/runityru/anycastd/checkers"
 	"github.com/runityru/anycastd/config"
-	"github.com/runityru/anycastd/service"
+	"github.com/runityru/anycastd/daemon"
 
 	// checkers in build
 	_ "github.com/runityru/anycastd/checkers/assigned_address"
@@ -36,22 +32,11 @@ var (
 )
 
 // newPeer builds a gobgp peer definition. localAddress is set as the
-// transport local address so the BGP session is sourced from the configured
-// address instead of whatever the kernel picks by route lookup.
+// transport local address so the BGP session is sourced from the
+// configured address instead of whatever the kernel picks by route
+// lookup.
 func newPeer(peer config.Peer, localAddress string) *apipb.Peer {
-	return &apipb.Peer{
-		Conf: &apipb.PeerConf{
-			NeighborAddress: peer.RemoteAddress,
-			PeerAsn:         peer.RemoteASN,
-		},
-		EbgpMultihop: &apipb.EbgpMultihop{
-			Enabled:     peer.EnableMultihop,
-			MultihopTtl: peer.MultihopTTL,
-		},
-		Transport: &apipb.Transport{
-			LocalAddress: localAddress,
-		},
-	}
+	return daemon.BuildPeer(peer, localAddress)
 }
 
 type spec struct {
@@ -66,11 +51,6 @@ func main() {
 	s := spec{}
 	envconfig.MustProcess("", &s)
 
-	cfg, err := config.NewFromFile(s.ConfigPath)
-	if err != nil {
-		panic(err)
-	}
-
 	log.SetLevel(s.LogLevel)
 
 	lf := new(log.TextFormatter)
@@ -79,121 +59,59 @@ func main() {
 
 	log.Infof("Initializing anycastd (%s @ %s) ...", appVersion, buildTimestamp)
 
-	g, _ := errgroup.WithContext(ctx)
+	hupCh := make(chan os.Signal, 1)
+	signal.Notify(hupCh, syscall.SIGHUP)
 
-	log.Trace("Initializing BGP server ...")
-	bgpSrv := server.NewBgpServer(server.LoggerOption(&announcer.Logger{Logger: &log.Logger{
-		Out:       os.Stderr,
-		Formatter: lf,
-		Hooks:     make(log.LevelHooks),
-		Level:     s.LogLevel,
-	}}))
-
-	g.Go(func() error {
-		log.Trace("Starting to serve GoBGP API")
-		bgpSrv.Serve()
-		return nil
-	})
-
-	log.Trace("Starting BGP sessions ...")
-	if err := bgpSrv.StartBgp(ctx, &apipb.StartBgpRequest{
-		Global: &apipb.Global{
-			RouterId:   cfg.Announcer.RouterID,
-			Asn:        cfg.Announcer.LocalASN,
-			ListenPort: -1,
-		},
-	}); err != nil {
-		panic(err)
-	}
-	defer func() {
-		err := bgpSrv.StopBgp(ctx, &apipb.StopBgpRequest{})
-		if err != nil {
-			log.Warnf("error stopping BGP session: %s", err)
+	// SIGHUPs are coalesced: while a reload is in progress further
+	// signals collapse into at most one follow-up reload.
+	reloadCh := make(chan struct{}, 1)
+	go func() {
+		for range hupCh {
+			select {
+			case reloadCh <- struct{}{}:
+			default:
+			}
 		}
 	}()
 
-	if err := bgpSrv.WatchEvent(context.Background(), &apipb.WatchEventRequest{
-		Peer: &apipb.WatchEventRequest_Peer{},
-	}, func(r *apipb.WatchEventResponse) {
-		if p := r.GetPeer(); p != nil && p.Type == apipb.WatchEventResponse_PeerEvent_STATE {
-			log.Info(p)
-		}
-	}); err != nil {
-		panic(err)
-	}
+	d := daemon.New(daemon.Options{
+		ConfigPath: s.ConfigPath,
+		LogLevel:   s.LogLevel,
+		AppVersion: appVersion,
+		NewBGP: func(level log.Level) (daemon.BGPInstance, error) {
+			bgpSrv := server.NewBgpServer(server.LoggerOption(&announcer.Logger{
+				Logger: &log.Logger{
+					Out:       os.Stderr,
+					Formatter: lf,
+					Hooks:     make(log.LevelHooks),
+					Level:     level,
+				},
+			}))
 
-	for _, peer := range cfg.Announcer.Peers {
-		err = bgpSrv.AddPeer(context.Background(), &apipb.AddPeerRequest{
-			Peer: newPeer(peer, cfg.Announcer.LocalAddress),
-		})
-		if err != nil {
-			panic(err)
-		}
-	}
+			return daemon.BGPInstance{
+				Client: bgpSrv,
+				Routes: gobgpv3.NewAdapter(bgpSrv),
+				Serve:  bgpSrv.Serve,
+				Close: func(ctx context.Context) error {
+					return bgpSrv.StopBgp(ctx, &apipb.StopBgpRequest{})
+				},
+				NewPeerMetrics: func(routerID string, asn uint32) (daemon.PeerMetrics, error) {
+					return announcer.NewMetricsRepository(bgpSrv, routerID, asn), nil
+				},
+			}, nil
+		},
+		NewRouteClient: func(getActive func() daemon.BGPClient) announcer.GoBGPServer {
+			return gobgpv3.NewDynamicAdapter(func() *server.BgpServer {
+				c := getActive()
+				if c == nil {
+					return nil
+				}
+				return c.(*server.BgpServer)
+			})
+		},
+	})
 
-	metrics, err := service.NewMetrics(appVersion)
-	if err != nil {
-		panic(err)
-	}
-
-	log.Info("Starting service initialization ...")
-	for _, svcCfg := range cfg.Services {
-		log.Tracef("Initializing service %s ...", svcCfg.Name)
-
-		checks := []service.Checker{}
-		for _, check := range svcCfg.Checks {
-			log.WithFields(log.Fields{
-				"service": svcCfg.Name,
-				"check":   check.Kind,
-			}).Trace("registering check ...")
-
-			c, err := checkers.NewCheckerByKind(check.Kind, check.Spec)
-			if err != nil {
-				panic(err)
-			}
-
-			checks = append(checks, service.Checker{Check: c, Group: check.Group})
-		}
-
-		a := announcer.New(announcer.Config{
-			GoBGP:    gobgpv3.NewAdapter(bgpSrv),
-			Prefixes: cfg.Announcer.Routes,
-			NextHop:  cfg.Announcer.LocalAddress,
-		})
-
-		strategy, err := service.GetStrategy(svcCfg.Strategy, svcCfg.StrategyOptions)
-		if err != nil {
-			panic(err)
-		}
-
-		svc := service.New(svcCfg.Name, a, checks, svcCfg.CheckInterval.TimeDuration(), metrics, strategy)
-
-		g.Go(func() error {
-			return svc.Run(ctx)
-		})
-	}
-
-	if cfg.Metrics.Enabled {
-		log.Debug("metrics server is enabled, initializing ...")
-
-		g.Go(func() error {
-			http.Handle("/metrics", promhttp.Handler())
-			return http.ListenAndServe(cfg.Metrics.Address, nil)
-		})
-
-		amr := announcer.NewMetricsRepository(bgpSrv, cfg.Announcer.RouterID, cfg.Announcer.LocalASN)
-		if err := amr.Register(); err != nil {
-			panic(err)
-		}
-
-		g.Go(func() error {
-			return amr.Run(ctx)
-		})
-	}
-
-	log.Infof("Initialization completed")
-
-	if err := g.Wait(); err != nil {
-		panic(err)
+	if err := d.Run(ctx, reloadCh); err != nil {
+		log.Fatal(err)
 	}
 }

@@ -12,6 +12,7 @@ import (
 type Metrics interface {
 	Run(ctx context.Context) error
 	Register() error
+	Unregister()
 }
 
 type metrics struct {
@@ -442,8 +443,8 @@ func (m *metrics) Run(ctx context.Context) error {
 	}
 }
 
-func (m *metrics) Register() error {
-	for _, mc := range []prometheus.Collector{
+func (m *metrics) collectors() []prometheus.Collector {
+	return []prometheus.Collector{
 		m.peerCount,
 		m.peerAdminState,
 		m.peerSessionState,
@@ -472,11 +473,21 @@ func (m *metrics) Register() error {
 		m.sentMessagesRefresh,
 		m.sentMessagesWithdrawUpdate,
 		m.sentMessagesWithdrawPrefix,
-	} {
+	}
+}
+
+func (m *metrics) Register() error {
+	for _, mc := range m.collectors() {
 		if err := prometheus.Register(mc); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+func (m *metrics) Unregister() {
+	for _, mc := range m.collectors() {
+		prometheus.Unregister(mc)
+	}
 }

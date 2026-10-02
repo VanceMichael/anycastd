@@ -10,6 +10,8 @@ import (
 type Metrics interface {
 	ServiceUp(service string)
 	ServiceDown(service string)
+	DeleteService(service string)
+	Unregister()
 
 	MeasureCall(ctx context.Context, service, check string, fn func(ctx context.Context) error) error
 }
@@ -48,19 +50,31 @@ func NewMetrics(appVersion string) (Metrics, error) {
 		[]string{"service", "check"},
 	)
 
-	for _, m := range []prometheus.Collector{appUpGauge, upGauge, checkDurationSeconds} {
-		if err := prometheus.Register(m); err != nil {
+	m := &metrics{
+		appUpGauge:           appUpGauge,
+		upGauge:              upGauge,
+		checkDurationSeconds: checkDurationSeconds,
+	}
+
+	for _, c := range m.collectors() {
+		if err := prometheus.Register(c); err != nil {
 			return nil, err
 		}
 	}
 
 	appUpGauge.WithLabelValues(appVersion).Set(1)
 
-	return &metrics{
-		appUpGauge:           appUpGauge,
-		upGauge:              upGauge,
-		checkDurationSeconds: checkDurationSeconds,
-	}, nil
+	return m, nil
+}
+
+func (m *metrics) collectors() []prometheus.Collector {
+	return []prometheus.Collector{m.appUpGauge, m.upGauge, m.checkDurationSeconds}
+}
+
+func (m *metrics) Unregister() {
+	for _, c := range m.collectors() {
+		prometheus.Unregister(c)
+	}
 }
 
 func (m *metrics) ServiceUp(service string) {
@@ -69,6 +83,14 @@ func (m *metrics) ServiceUp(service string) {
 
 func (m *metrics) ServiceDown(service string) {
 	m.upGauge.WithLabelValues(service).Set(0.0)
+}
+
+// DeleteService removes the label series owned by a service that is no
+// longer part of the active configuration generation, so stale services
+// do not linger in the /metrics output.
+func (m *metrics) DeleteService(service string) {
+	m.upGauge.DeleteLabelValues(service)
+	m.checkDurationSeconds.DeletePartialMatch(prometheus.Labels{"service": service})
 }
 
 func (m *metrics) MeasureCall(ctx context.Context, service, check string, fn func(ctx context.Context) error) error {

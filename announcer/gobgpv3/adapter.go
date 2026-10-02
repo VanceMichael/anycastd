@@ -23,6 +23,44 @@ func NewAdapter(srv *server.BgpServer) announcer.GoBGPServer {
 	return &adapter{srv: srv}
 }
 
+// NewDynamicAdapter wraps a supplier of the currently active GoBGP v3
+// server. Every call resolves the server through the supplier, which
+// allows a configuration generation switch that recreates the BGP
+// server to rebind the route client atomically without restarting the
+// services that use it.
+func NewDynamicAdapter(getServer func() *server.BgpServer) announcer.GoBGPServer {
+	return &dynamicAdapter{getServer: getServer}
+}
+
+type dynamicAdapter struct {
+	getServer func() *server.BgpServer
+}
+
+func (a *dynamicAdapter) AddPath(ctx context.Context, prefix, nextHop string) error {
+	p, err := newPath(prefix, nextHop)
+	if err != nil {
+		return err
+	}
+
+	_, err = a.getServer().AddPath(ctx, &api.AddPathRequest{
+		Path: p,
+	})
+	return err
+}
+
+func (a *dynamicAdapter) DeletePath(ctx context.Context, prefix string) error {
+	// For deletion in v3 we only need the NLRI part. Pass an empty nextHop
+	// since the attribute is ignored during withdrawal.
+	p, err := newPath(prefix, "")
+	if err != nil {
+		return err
+	}
+
+	return a.getServer().DeletePath(ctx, &api.DeletePathRequest{
+		Path: p,
+	})
+}
+
 func (a *adapter) AddPath(ctx context.Context, prefix, nextHop string) error {
 	p, err := newPath(prefix, nextHop)
 	if err != nil {

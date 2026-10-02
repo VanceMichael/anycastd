@@ -24,6 +24,14 @@ func (m *MetricsMock) ServiceDown(service string) {
 	m.Called(service)
 }
 
+func (m *MetricsMock) DeleteService(service string) {
+	m.Called(service)
+}
+
+func (m *MetricsMock) Unregister() {
+	m.Called()
+}
+
 func (m *MetricsMock) MeasureCall(ctx context.Context, service, check string, fn func(ctx context.Context) error) error {
 	m.Called(service, check)
 	return fn(ctx)

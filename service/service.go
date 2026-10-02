@@ -32,6 +32,20 @@ type service struct {
 	announced *atomic.Bool
 }
 
+// Option customizes a Service constructed via New.
+type Option func(*service)
+
+// WithInitialAnnounced seeds the service as if its prefixes were already
+// announced. It is used by a generation switch that replaces a healthy
+// service in place: the replacement adopts the advertisement state of
+// its predecessor so the route set is neither withdrawn nor announced
+// a second time.
+func WithInitialAnnounced() Option {
+	return func(s *service) {
+		s.announced.Store(true)
+	}
+}
+
 func New(
 	name string,
 	a announcer.Announcer,
@@ -39,8 +53,9 @@ func New(
 	interval time.Duration,
 	metrics Metrics,
 	strategy Strategy,
+	opts ...Option,
 ) Service {
-	return &service{
+	s := &service{
 		name:      name,
 		announcer: a,
 		checks:    checks,
@@ -49,6 +64,12 @@ func New(
 		strategy:  strategy,
 		announced: &atomic.Bool{},
 	}
+
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	return s
 }
 
 func (s *service) Run(ctx context.Context) error {
